@@ -6,6 +6,9 @@ import Peer from 'simple-peer';
 const socket = io('https://reshtalk.onrender.com/', {
   transports: ['websocket'],
   secure: true,
+  reconnection: true,
+  reconnectionAttempts: 5,
+  reconnectionDelay: 1000,
 });
 
 function App() {
@@ -21,26 +24,39 @@ function App() {
   const [partnersFound, setPartnersFound] = useState(Math.floor(Math.random() * 1000) + 500);
 
   useEffect(() => {
-    navigator.mediaDevices.getUserMedia({
-      video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
-      audio: true,
-    })
-      .then((currentStream) => {
-        setStream(currentStream);
-        if (myVideoRef.current) {
-          myVideoRef.current.srcObject = currentStream;
-          myVideoRef.current.play().catch((err) => console.error('Play error:', err));
-        }
-      })
-      .catch((err) => {
-        console.error('Media error:', err);
-        setStatus(`Camera access denied: ${err.message}`);
-      });
+    // Check camera permissions
+    navigator.permissions.query({ name: 'camera' }).then((result) => {
+      if (result.state === 'denied') {
+        setStatus('Camera access denied. Please enable in browser settings.');
+      } else if (result.state === 'granted') {
+        setStatus('Camera access granted. Click Start to connect.');
+      }
+    });
 
-    socket.on('connect', () => console.log('Socket connected'));
-    socket.on('disconnect', () => console.log('Socket disconnected'));
+    // Handle resize for mobile
+    const handleResize = () => {
+      if (myVideoRef.current && myVideoRef.current.srcObject) {
+        myVideoRef.current.play().catch((err) => console.error('Resize play error:', err));
+      }
+      if (partnerVideoRef.current && partnerVideoRef.current.srcObject) {
+        partnerVideoRef.current.play().catch((err) => console.error('Partner resize play error:', err));
+      }
+    };
+    window.addEventListener('resize', handleResize);
+
+    // Socket events
+    socket.on('connect', () => {
+      console.log('Socket connected');
+      setStatus('Ready to connect');
+    });
+
+    socket.on('connect_error', (err) => {
+      console.error('Socket connection error:', err);
+      setStatus('Failed to connect to server. Please try again.');
+    });
 
     socket.on('matched', ({ partnerId, initiator }) => {
+      console.log(`Matched with ${partnerId}, initiator: ${initiator}`);
       setStatus('Matched! Connecting...');
       setInCall(true);
       setIsConnecting(false);
@@ -58,6 +74,7 @@ function App() {
 
       const timeout = setTimeout(() => {
         if (!peerRef.current?.connected) {
+          console.log('Connection timed out');
           setStatus('Connection timed out. Trying again...');
           cleanupPeer();
           socket.emit('joinQueue');
@@ -72,7 +89,10 @@ function App() {
         clearTimeout(timeout);
         if (partnerVideoRef.current) {
           partnerVideoRef.current.srcObject = partnerStream;
-          partnerVideoRef.current.play().catch((err) => console.error('Partner play error:', err));
+          partnerVideoRef.current.play().catch((err) => {
+            console.error('Partner video play error:', err);
+            setStatus('Failed to play partner video. Trying again...');
+          });
         }
         setStatus('Connected! Say hello!');
       });
@@ -87,6 +107,7 @@ function App() {
 
       peer.on('connect', () => {
         console.log('Peer connected');
+        clearTimeout(timeout);
       });
 
       peerRef.current = peer;
@@ -109,21 +130,43 @@ function App() {
       socket.emit('joinQueue');
     });
 
+    socket.on('joiningQueue', () => {
+      setStatus('Finding a match...');
+      setIsConnecting(true);
+    });
+
     const interval = setInterval(() => {
       setPartnersFound((prev) => prev + Math.floor(Math.random() * 3) - 1);
     }, 5000);
 
     return () => {
       socket.off();
+      window.removeEventListener('resize', handleResize);
       clearInterval(interval);
       cleanupPeer();
     };
   }, [stream]);
 
   const startChat = () => {
-    setStatus('Finding a match...');
-    setIsConnecting(true);
-    socket.emit('joinQueue');
+    setStatus('Accessing camera...');
+    navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 15 } },
+      audio: true,
+    })
+      .then((currentStream) => {
+        setStream(currentStream);
+        if (myVideoRef.current) {
+          myVideoRef.current.srcObject = currentStream;
+          myVideoRef.current.play().catch((err) => console.error('Video play error:', err));
+        }
+        setStatus('Finding a match...');
+        setIsConnecting(true);
+        socket.emit('joinQueue');
+      })
+      .catch((err) => {
+        console.error('Media error:', err);
+        setStatus(`Failed to access camera: ${err.message}. Please ensure permissions are granted.`);
+      });
   };
 
   const nextChat = () => {
@@ -199,20 +242,20 @@ function App() {
               }`}
             >
               {isConnecting && (
-                <div className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin"></div>
+                <div className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin-slow"></div>
               )}
               <span>{status}</span>
             </div>
           </div>
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 mb-8">
             <div className="relative group">
-              <div className="relative w-full aspect-video max-h-[50vh] bg-black/50 rounded-2xl overflow-visible border border-white/10 shadow-2xl">
+              <div className="relative w-full max-h-[45vh] bg-black rounded-2xl border border-white/20">
                 <video
                   ref={myVideoRef}
                   autoPlay
                   playsInline
                   muted
-                  className="w-full h-auto max-h-[50vh] rounded-2xl"
+                  className="w-full h-auto max-h-[45vh] rounded-2xl bg-black"
                 />
                 {!videoEnabled && (
                   <div className="absolute inset-0 flex items-center justify-center bg-gray-800">
@@ -232,12 +275,12 @@ function App() {
               </div>
             </div>
             <div className="relative group">
-              <div className="relative w-full aspect-video max-h-[50vh] bg-black/50 rounded-2xl overflow-visible border border-white/10 shadow-2xl">
+              <div className="relative w-full max-h-[45vh] bg-black rounded-2xl border border-white/20">
                 <video
                   ref={partnerVideoRef}
                   autoPlay
                   playsInline
-                  className="w-full h-auto max-h-[50vh] rounded-2xl"
+                  className="w-full h-auto max-h-[45vh] rounded-2xl bg-black"
                 />
                 {!inCall && !isConnecting && (
                   <div className="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-gray-800 to-gray-900">
@@ -250,7 +293,7 @@ function App() {
                 )}
                 {isConnecting && (
                   <div className="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-blue-900/50 to-purple-900/50">
-                    <div className="w-16 h-16 border-4 border-blue-400 border-t-transparent rounded-full animate-spin mb-4"></div>
+                    <div className="w-16 h-16 border-4 border-blue-400 border-t-transparent rounded-full animate-spin-slow mb-4"></div>
                     <p className="text-blue-300 text-lg font-medium">Connecting...</p>
                   </div>
                 )}
@@ -289,7 +332,7 @@ function App() {
               >
                 {isConnecting ? (
                   <>
-                    <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                    <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin-slow"></div>
                     <span>Connecting...</span>
                   </>
                 ) : (
@@ -307,7 +350,7 @@ function App() {
               >
                 {isConnecting ? (
                   <>
-                    <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                    <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin-slow"></div>
                     <span>Finding...</span>
                   </>
                 ) : (
