@@ -3,7 +3,10 @@ import { Video, VideoOff, Mic, MicOff, Users, Shuffle, Play } from 'lucide-react
 import io from 'socket.io-client';
 import Peer from 'simple-peer';
 
-const socket = io('https://reshtalk.onrender.com/'); // Update to your backend URL in production
+const socket = io('https://reshtalk.onrender.com/', {
+  transports: ['websocket'],
+  secure: true,
+});
 
 function App() {
   const myVideoRef = useRef(null);
@@ -18,45 +21,83 @@ function App() {
   const [partnersFound, setPartnersFound] = useState(Math.floor(Math.random() * 1000) + 500);
 
   useEffect(() => {
-    // Get user media
-    navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+    navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'user', width: { ideal: 1280 }, height: { ideal: 720 } },
+      audio: true,
+    })
       .then((currentStream) => {
         setStream(currentStream);
         if (myVideoRef.current) {
           myVideoRef.current.srcObject = currentStream;
+          myVideoRef.current.play().catch((err) => console.error('Play error:', err));
         }
       })
       .catch((err) => {
         console.error('Media error:', err);
-        setStatus('Camera access denied');
+        setStatus(`Camera access denied: ${err.message}`);
       });
 
-    // Socket events
+    socket.on('connect', () => console.log('Socket connected'));
+    socket.on('disconnect', () => console.log('Socket disconnected'));
+
     socket.on('matched', ({ partnerId, initiator }) => {
       setStatus('Matched! Connecting...');
       setInCall(true);
       setIsConnecting(false);
       const peer = new Peer({
         initiator,
-        trickle: false,
+        trickle: true,
         stream,
+        config: {
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+          ],
+        },
       });
+
+      const timeout = setTimeout(() => {
+        if (!peerRef.current?.connected) {
+          setStatus('Connection timed out. Trying again...');
+          cleanupPeer();
+          socket.emit('joinQueue');
+        }
+      }, 10000);
 
       peer.on('signal', (signal) => {
         socket.emit('signal', { to: partnerId, signal });
       });
 
       peer.on('stream', (partnerStream) => {
-        partnerVideoRef.current.srcObject = partnerStream;
+        clearTimeout(timeout);
+        if (partnerVideoRef.current) {
+          partnerVideoRef.current.srcObject = partnerStream;
+          partnerVideoRef.current.play().catch((err) => console.error('Partner play error:', err));
+        }
         setStatus('Connected! Say hello!');
+      });
+
+      peer.on('error', (err) => {
+        console.error('Peer error:', err);
+        clearTimeout(timeout);
+        setStatus('Connection failed. Trying again...');
+        cleanupPeer();
+        socket.emit('joinQueue');
+      });
+
+      peer.on('connect', () => {
+        console.log('Peer connected');
       });
 
       peerRef.current = peer;
     });
 
     socket.on('signal', ({ signal, from }) => {
+      console.log(`Received signal from ${from}`);
       if (peerRef.current) {
         peerRef.current.signal(signal);
+      } else {
+        console.log('No peer instance available');
       }
     });
 
@@ -68,9 +109,8 @@ function App() {
       socket.emit('joinQueue');
     });
 
-    // Simulate partner count updates
     const interval = setInterval(() => {
-      setPartnersFound(prev => prev + Math.floor(Math.random() * 3) - 1);
+      setPartnersFound((prev) => prev + Math.floor(Math.random() * 3) - 1);
     }, 5000);
 
     return () => {
@@ -126,7 +166,6 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 text-white">
-      {/* Header */}
       <header className="p-4 sm:p-6 border-b border-white/10 backdrop-blur-sm bg-black/20">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
           <div className="flex items-center space-x-3">
@@ -140,7 +179,6 @@ function App() {
               <p className="text-xs sm:text-sm text-gray-300 hidden sm:block">Random video chat with strangers</p>
             </div>
           </div>
-          
           <div className="flex items-center space-x-2 text-sm bg-white/10 backdrop-blur-sm rounded-full px-3 py-1.5">
             <Users className="w-4 h-4 text-green-400" />
             <span className="text-green-400 font-medium">{partnersFound.toLocaleString()}</span>
@@ -148,35 +186,33 @@ function App() {
           </div>
         </div>
       </header>
-
-      {/* Main Content */}
       <main className="flex-1 p-4 sm:p-6">
         <div className="max-w-7xl mx-auto">
-          {/* Status Bar */}
           <div className="text-center mb-6">
-            <div className={`inline-flex items-center space-x-2 px-4 py-2 rounded-full text-sm font-medium backdrop-blur-sm ${
-              inCall ? 'bg-green-500/20 text-green-300 border border-green-500/30' :
-              isConnecting ? 'bg-yellow-500/20 text-yellow-300 border border-yellow-500/30' :
-              'bg-blue-500/20 text-blue-300 border border-blue-500/30'
-            }`}>
+            <div
+              className={`inline-flex items-center space-x-2 px-4 py-2 rounded-full text-sm font-medium backdrop-blur-sm ${
+                inCall
+                  ? 'bg-green-500/20 text-green-300 border border-green-500/30'
+                  : isConnecting
+                  ? 'bg-yellow-500/20 text-yellow-300 border border-yellow-500/30'
+                  : 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
+              }`}
+            >
               {isConnecting && (
                 <div className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin"></div>
               )}
               <span>{status}</span>
             </div>
           </div>
-
-          {/* Video Grid */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6 mb-8">
-            {/* My Video */}
             <div className="relative group">
-              <div className="relative aspect-video bg-black/50 backdrop-blur-sm rounded-2xl overflow-hidden border border-white/10 shadow-2xl">
-                <video 
-                  ref={myVideoRef} 
-                  autoPlay 
-                  playsInline 
-                  muted 
-                  className="w-full h-full object-cover"
+              <div className="relative w-full aspect-video max-h-[50vh] bg-black/50 rounded-2xl overflow-visible border border-white/10 shadow-2xl">
+                <video
+                  ref={myVideoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  className="w-full h-auto max-h-[50vh] rounded-2xl"
                 />
                 {!videoEnabled && (
                   <div className="absolute inset-0 flex items-center justify-center bg-gray-800">
@@ -195,15 +231,13 @@ function App() {
                 </div>
               </div>
             </div>
-
-            {/* Partner Video */}
             <div className="relative group">
-              <div className="relative aspect-video bg-black/50 backdrop-blur-sm rounded-2xl overflow-hidden border border-white/10 shadow-2xl">
-                <video 
-                  ref={partnerVideoRef} 
-                  autoPlay 
-                  playsInline 
-                  className="w-full h-full object-cover"
+              <div className="relative w-full aspect-video max-h-[50vh] bg-black/50 rounded-2xl overflow-visible border border-white/10 shadow-2xl">
+                <video
+                  ref={partnerVideoRef}
+                  autoPlay
+                  playsInline
+                  className="w-full h-auto max-h-[50vh] rounded-2xl"
                 />
                 {!inCall && !isConnecting && (
                   <div className="absolute inset-0 flex flex-col items-center justify-center bg-gradient-to-br from-gray-800 to-gray-900">
@@ -226,40 +260,30 @@ function App() {
               </div>
             </div>
           </div>
-
-          {/* Controls */}
           <div className="flex flex-col sm:flex-row items-center justify-center space-y-4 sm:space-y-0 sm:space-x-6">
-            {/* Media Controls */}
             <div className="flex space-x-3">
               <button
                 onClick={toggleVideo}
                 className={`w-12 h-12 rounded-full flex items-center justify-center transition-all duration-200 ${
-                  videoEnabled 
-                    ? 'bg-white/20 hover:bg-white/30 text-white' 
-                    : 'bg-red-500 hover:bg-red-600 text-white'
+                  videoEnabled ? 'bg-white/20 hover:bg-white/30 text-white' : 'bg-red-500 hover:bg-red-600 text-white'
                 }`}
                 title={videoEnabled ? 'Turn off camera' : 'Turn on camera'}
               >
                 {videoEnabled ? <Video className="w-5 h-5" /> : <VideoOff className="w-5 h-5" />}
               </button>
-              
               <button
                 onClick={toggleAudio}
                 className={`w-12 h-12 rounded-full flex items-center justify-center transition-all duration-200 ${
-                  audioEnabled 
-                    ? 'bg-white/20 hover:bg-white/30 text-white' 
-                    : 'bg-red-500 hover:bg-red-600 text-white'
+                  audioEnabled ? 'bg-white/20 hover:bg-white/30 text-white' : 'bg-red-500 hover:bg-red-600 text-white'
                 }`}
                 title={audioEnabled ? 'Mute microphone' : 'Unmute microphone'}
               >
                 {audioEnabled ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}
               </button>
             </div>
-
-            {/* Main Action Button */}
             {!inCall ? (
-              <button 
-                onClick={startChat} 
+              <button
+                onClick={startChat}
                 disabled={isConnecting}
                 className="bg-gradient-to-r from-pink-500 to-violet-600 hover:from-pink-600 hover:to-violet-700 disabled:opacity-50 disabled:cursor-not-allowed px-8 py-3 rounded-full font-semibold text-lg transition-all duration-200 transform hover:scale-105 active:scale-95 shadow-xl flex items-center space-x-2 min-w-[160px] justify-center"
               >
@@ -276,8 +300,8 @@ function App() {
                 )}
               </button>
             ) : (
-              <button 
-                onClick={nextChat} 
+              <button
+                onClick={nextChat}
                 disabled={isConnecting}
                 className="bg-gradient-to-r from-orange-500 to-red-600 hover:from-orange-600 hover:to-red-700 disabled:opacity-50 disabled:cursor-not-allowed px-8 py-3 rounded-full font-semibold text-lg transition-all duration-200 transform hover:scale-105 active:scale-95 shadow-xl flex items-center space-x-2 min-w-[160px] justify-center"
               >
@@ -297,8 +321,6 @@ function App() {
           </div>
         </div>
       </main>
-
-      {/* Footer */}
       <footer className="p-4 text-center text-gray-400 text-sm border-t border-white/10 backdrop-blur-sm bg-black/20">
         <p>Stay safe online • Be respectful • Have fun connecting with people worldwide</p>
       </footer>
