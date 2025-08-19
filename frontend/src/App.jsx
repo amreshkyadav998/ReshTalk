@@ -1,12 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Video, VideoOff, Mic, MicOff, Users, Shuffle, Play } from 'lucide-react';
+import io from 'socket.io-client';
+import Peer from 'simple-peer';
 
-// Mock socket and Peer for demonstration - replace with actual imports
-const socket = {
-  on: () => {},
-  emit: () => {},
-  off: () => {}
-};
+const socket = io('https://reshtalk.onrender.com/'); // Update to your backend URL in production
 
 function App() {
   const myVideoRef = useRef(null);
@@ -34,41 +31,67 @@ function App() {
         setStatus('Camera access denied');
       });
 
+    // Socket events
+    socket.on('matched', ({ partnerId, initiator }) => {
+      setStatus('Matched! Connecting...');
+      setInCall(true);
+      setIsConnecting(false);
+      const peer = new Peer({
+        initiator,
+        trickle: false,
+        stream,
+      });
+
+      peer.on('signal', (signal) => {
+        socket.emit('signal', { to: partnerId, signal });
+      });
+
+      peer.on('stream', (partnerStream) => {
+        partnerVideoRef.current.srcObject = partnerStream;
+        setStatus('Connected! Say hello!');
+      });
+
+      peerRef.current = peer;
+    });
+
+    socket.on('signal', ({ signal, from }) => {
+      if (peerRef.current) {
+        peerRef.current.signal(signal);
+      }
+    });
+
+    socket.on('partnerLeft', () => {
+      setStatus('Partner left. Finding new match...');
+      setInCall(false);
+      setIsConnecting(true);
+      cleanupPeer();
+      socket.emit('joinQueue');
+    });
+
     // Simulate partner count updates
     const interval = setInterval(() => {
       setPartnersFound(prev => prev + Math.floor(Math.random() * 3) - 1);
     }, 5000);
 
     return () => {
+      socket.off();
       clearInterval(interval);
       cleanupPeer();
     };
-  }, []);
+  }, [stream]);
 
   const startChat = () => {
     setStatus('Finding a match...');
     setIsConnecting(true);
-    
-    // Simulate connection process
-    setTimeout(() => {
-      setStatus('Connected! Say hello!');
-      setInCall(true);
-      setIsConnecting(false);
-    }, 2000);
+    socket.emit('joinQueue');
   };
 
   const nextChat = () => {
     setStatus('Finding next match...');
     setIsConnecting(true);
     setInCall(false);
+    socket.emit('next');
     cleanupPeer();
-    
-    // Simulate finding next match
-    setTimeout(() => {
-      setStatus('Connected! Say hello!');
-      setInCall(true);
-      setIsConnecting(false);
-    }, 1500);
   };
 
   const toggleVideo = () => {

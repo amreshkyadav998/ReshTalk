@@ -11,6 +11,11 @@ const io = new Server(server, {
 
 app.use(cors());
 
+app.get("/", (req, res) => {
+    res.send("Server is running!");
+  });
+  
+
 let waitingQueue = []; // Queue for users waiting to be matched
 const rooms = new Map(); // Track rooms and partners
 
